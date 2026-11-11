@@ -179,3 +179,29 @@ test("HTTP errors and cancellation produce terminal errors without retries", asy
   const aborted = await provider.streamSimple(modelDefinition(FALLBACK), context, { apiKey: "dedicated", signal: controller.signal }).result();
   assert.equal(aborted.stopReason, "aborted");
 });
+
+test("deepseek output budget leaves room for reasoning", () => {
+  assert.equal(modelDefinition("deepseek-v4-1-flash-1017", { max_context_length: 1048576 }).maxTokens, 65536);
+  assert.equal(modelDefinition("mistral-vibe-cli-latest").maxTokens, 8192);
+});
+
+test("deepseek max_tokens floor holds even for a fallback-cloned model (async subagent children)", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const provider = createVibeProvider(async (url, init) => {
+    if (url.toString().endsWith("/models")) {
+      return json({ data: [{ id: "deepseek-v4-1-flash-1017", capabilities: { completion_chat: true } }] });
+    }
+    bodies.push(JSON.parse(init!.body as string));
+    return sse(textChunks);
+  });
+  await provider.refreshModels!(refresh());
+  // Offline child refresh clones the fallback definition under the real id: maxTokens 8192.
+  const cloned = { ...modelDefinition(FALLBACK), id: "deepseek-v4-1-flash-1017", name: "deepseek-v4-1-flash-1017" };
+  assert.equal(cloned.maxTokens, 8192);
+  await provider.streamSimple(cloned, context, { apiKey: "dedicated", reasoning: "high" }).result();
+  await provider.streamSimple(cloned, context, { apiKey: "dedicated", maxTokens: 100 }).result();
+  assert.deepEqual(bodies.map(b => b.max_tokens), [65536, 65536]);
+  // Other models keep the caller's budget.
+  await provider.streamSimple(modelDefinition(FALLBACK), context, { apiKey: "dedicated", maxTokens: 100 }).result();
+  assert.equal(bodies.at(-1)?.max_tokens, 100);
+});

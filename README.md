@@ -82,7 +82,10 @@ Pi may also discover the catalog during its normal provider refresh.
 The refresh command only calls `GET https://api.mistral.ai/v1/models`; it never
 sends a prompt. Only entries with `capabilities.completion_chat === true` are
 included. Discovery is cached in memory for one hour per provider instance and
-key fingerprint; the refresh command bypasses that TTL. Catalog snapshots are
+key fingerprint; the refresh command bypasses that TTL. Sessions starting on a
+Mistral Vibe model also refresh their own catalog before inference. This includes
+subagents: refreshing the parent alone cannot initialize a child's fresh provider.
+Startup performs only a bounded catalog GET, never an inference probe. Catalog snapshots are
 not written to disk. On same-key refresh failure, the previous in-memory list
 remains; a different key cannot use the previous key's discovered models.
 

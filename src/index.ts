@@ -4,6 +4,15 @@ import { getRequestDiagnostics } from "./diagnostics.ts";
 
 export default function mistralVibe(pi: ExtensionAPI) {
   pi.registerProvider(createVibeProvider());
+  // Children load a fresh provider and only restore catalogs offline. A parent's
+  // refresh cannot initialize this instance's key-scoped admission state.
+  pi.on("session_start", async (_event, ctx) => {
+    if (ctx.model?.provider !== ID) return;
+    const result = await ctx.modelRegistry.refresh({ providers: [ID], signal: AbortSignal.timeout(15_000) });
+    const error = result.errors.get(ID);
+    if (error) throw error;
+    if (result.aborted) throw new Error("Mistral Vibe startup catalog refresh cancelled");
+  });
   pi.registerCommand("mistral-vibe-diagnostics", {
     description: "Show payload-free metadata for the last Mistral Vibe HTTP request",
     async handler(_args, ctx) {

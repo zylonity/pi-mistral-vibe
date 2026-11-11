@@ -30,6 +30,9 @@ export function reasoningEffort(id: string, level?: string): string | undefined 
   return ["low", "medium", "high"].includes(level) ? level : undefined;
 }
 
+/** Live-verified output ceilings, applied even when Pi hands us a cloned fallback model. */
+const OUTPUT_FLOOR: Record<string, number> = { "deepseek-v4-1-flash-1017": 65536 };
+
 export function modelDefinition(id: string, row: Record<string, unknown> = {}): Model<"openai-completions"> {
   const capabilities = row.capabilities as Record<string, unknown> | undefined;
   const contextWindow = typeof row.max_context_length === "number" && Number.isSafeInteger(row.max_context_length) && row.max_context_length > 0
@@ -46,7 +49,10 @@ export function modelDefinition(id: string, row: Record<string, unknown> = {}): 
     input: capabilities?.vision === true ? ["text", "image"] : ["text"],
     // Unknown prices, NOT a claim of free usage.
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow, maxTokens: Math.min(contextWindow, 8192),
+    // Reasoning shares the output budget: 8192 tokens made deepseek stop with
+    // finish_reason "length" mid-thought at high/xhigh. Live-verified 2026-11-11:
+    // the API accepts max_tokens 65536 for deepseek-v4-1-flash-1017.
+    contextWindow, maxTokens: Math.min(contextWindow, OUTPUT_FLOOR[id] ?? 8192),
     compat: { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: false, maxTokensField: "max_tokens" },
   };
 }
@@ -114,6 +120,11 @@ export function createVibeProvider(fetcher = globalThis.fetch): Provider<"openai
         delete body.reasoning_effort;
         const effort = reasoningEffort(model.id, options.reasoning ?? options.reasoningEffort);
         if (effort) body.reasoning_effort = effort;
+        // Async subagent children refresh providers offline and get this model cloned from the
+        // fallback definition (maxTokens 8192), so reasoning ran out mid-turn. Enforce the floor
+        // on the wire, independent of which model object Pi supplied.
+        const floor = OUTPUT_FLOOR[model.id];
+        if (floor && (typeof body.max_tokens !== "number" || body.max_tokens < floor)) body.max_tokens = floor;
         return body;
       },
     };
