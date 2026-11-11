@@ -205,3 +205,38 @@ test("deepseek max_tokens floor holds even for a fallback-cloned model (async su
   await provider.streamSimple(modelDefinition(FALLBACK), context, { apiKey: "dedicated", maxTokens: 100 }).result();
   assert.equal(bodies.at(-1)?.max_tokens, 100);
 });
+
+test("deepseek reports its 1M context window even without a catalog row", () => {
+  // Live-verified: max_context_length 1048576. The fallback clone Pi builds for async
+  // subagent children says 128000, which would truncate every child to 128K.
+  assert.equal(modelDefinition("deepseek-v4-1-flash-1017").contextWindow, 1_048_576);
+  assert.equal(modelDefinition("deepseek-v4-1-flash-1017", { max_context_length: 1048576 }).contextWindow, 1_048_576);
+  assert.equal(modelDefinition("deepseek-v4-1-flash-1017", { max_context_length: 200_000 }).contextWindow, 1_048_576);
+  assert.equal(modelDefinition("deepseek-v4-1-flash-1017").maxTokens, 65536);
+  assert.equal(modelDefinition(FALLBACK).contextWindow, 128_000);
+});
+
+test("catalog is persisted so offline children see the real models, and a stored catalog is adopted", async () => {
+  const provider = createVibeProvider(async (url) => {
+    if (url.toString().endsWith("/models")) {
+      return json({ data: [{ id: "deepseek-v4-1-flash-1017", capabilities: { completion_chat: true }, max_context_length: 1048576 }] });
+    }
+    return sse(textChunks);
+  });
+  let persisted: { models: readonly unknown[] } | undefined;
+  const ctx = (extra: Partial<RefreshModelsContext> = {}): RefreshModelsContext => ({
+    ...refresh("dedicated", extra),
+    async publish({ persist, update }) { if (persist) persisted = persist as { models: readonly unknown[] }; update?.(); return true; },
+  });
+  await provider.refreshModels!(ctx());
+  assert.ok(persisted, "refresh must persist the catalog for offline children");
+  assert.equal((persisted!.models as { id: string }[]).some(m => m.id === "deepseek-v4-1-flash-1017"), true);
+
+  // A child process: fresh provider, no network, only the stored snapshot.
+  const child = createVibeProvider(async () => { throw new Error("must not use the network"); });
+  assert.equal(child.getModels().length, 1);
+  await child.refreshModels!(ctx({ allowNetwork: false, stored: persisted as never }));
+  const adopted = child.getModels().find(m => m.id === "deepseek-v4-1-flash-1017");
+  assert.equal(adopted?.contextWindow, 1_048_576);
+  assert.equal(adopted?.maxTokens, 65536);
+});

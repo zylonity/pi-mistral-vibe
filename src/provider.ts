@@ -33,10 +33,20 @@ export function reasoningEffort(id: string, level?: string): string | undefined 
 /** Live-verified output ceilings, applied even when Pi hands us a cloned fallback model. */
 const OUTPUT_FLOOR: Record<string, number> = { "deepseek-v4-1-flash-1017": 65536 };
 
+/**
+ * Live-verified context windows (GET /v1/models, 2026-11-11): deepseek-v4-1-flash-1017
+ * reports max_context_length 1048576 ("DeepSeek V4.1 Flash 1017 with a 1M context limit").
+ * Applied on the wire as well: async subagent children refresh providers offline and Pi
+ * hands them this model cloned from the fallback definition (128000), which would truncate
+ * every child to 128K.
+ */
+const CONTEXT_FLOOR: Record<string, number> = { "deepseek-v4-1-flash-1017": 1_048_576 };
+
 export function modelDefinition(id: string, row: Record<string, unknown> = {}): Model<"openai-completions"> {
   const capabilities = row.capabilities as Record<string, unknown> | undefined;
-  const contextWindow = typeof row.max_context_length === "number" && Number.isSafeInteger(row.max_context_length) && row.max_context_length > 0
-    ? row.max_context_length : 128_000;
+  const reported = typeof row.max_context_length === "number" && Number.isSafeInteger(row.max_context_length) && row.max_context_length > 0
+    ? row.max_context_length : 0;
+  const contextWindow = Math.max(reported, CONTEXT_FLOOR[id] ?? 0) || 128_000;
   return {
     id, name: typeof row.name === "string" && row.name ? row.name : id,
     provider: ID, api: "openai-completions", baseUrl: BASE,
@@ -172,8 +182,17 @@ export function createVibeProvider(fetcher = globalThis.fetch): Provider<"openai
     async refreshModels(context) {
       const key = keyFor(context.credential);
       const nextScope = key ? fingerprint(key) : undefined;
+      // A stored catalog from an earlier run is what offline children (and a cold start without
+      // network) see; adopt it before deciding whether a network refresh is needed.
+      const stored = context.stored?.models;
+      const restore = Array.isArray(stored) && stored.length > 0
+        ? stored.filter((m): m is Model<"openai-completions"> => !!m && typeof m.id === "string" && m.provider === ID)
+        : [];
       if (scope !== nextScope) {
-        await context.publish({ update: () => { catalog = [modelDefinition(FALLBACK)]; scope = nextScope; refreshedAt = 0; } });
+        const initial = restore.length > 0 ? restore : [modelDefinition(FALLBACK)];
+        await context.publish({ update: () => { catalog = initial; scope = nextScope; refreshedAt = 0; } });
+      } else if (restore.length > 0 && catalog.length <= 1 && catalog[0]?.id === FALLBACK) {
+        await context.publish({ update: () => { catalog = restore; } });
       }
       if (!context.allowNetwork || !key) return;
       if (context.baseUrl && context.baseUrl.replace(/\/$/, "") !== BASE) throw new Error("Mistral Vibe catalog endpoint override blocked");
@@ -184,7 +203,12 @@ export function createVibeProvider(fetcher = globalThis.fetch): Provider<"openai
       }, fetcher);
       const discovered = parseCatalog(payload);
       if (!discovered.some(m => m.id === FALLBACK)) discovered.unshift(modelDefinition(FALLBACK));
-      await context.publish({ update: () => { catalog = discovered; scope = nextScope; refreshedAt = Date.now(); } });
+      // Persist the catalog: async subagent children start with allowNetwork false, so without
+      // a stored snapshot they fall back to the 128K/8K fallback clone of every model.
+      await context.publish({
+        persist: { models: discovered, checkedAt: Date.now() },
+        update: () => { catalog = discovered; scope = nextScope; refreshedAt = Date.now(); },
+      });
     },
   };
 }

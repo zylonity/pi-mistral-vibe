@@ -89,6 +89,15 @@ Startup performs only a bounded catalog GET, never an inference probe. Catalog s
 not written to disk. On same-key refresh failure, the previous in-memory list
 remains; a different key cannot use the previous key's discovered models.
 
+### Context window
+
+`deepseek-v4-1-flash-1017` reports `max_context_length` 1048576 ("1M context limit").
+The provider enforces that as a floor for this model (not just the value in the catalog
+row), because async subagent children start offline and Pi hands them the model cloned
+from the 128K fallback definition. Discovered catalogs are also persisted
+(`publish({ persist })`) and adopted on a cold/offline start, so a child sees the real
+models instead of the fallback alone.
+
 ### Output budget
 
 Mistral Vibe models default to `max_tokens` 8192. DeepSeek V4.1 Flash
