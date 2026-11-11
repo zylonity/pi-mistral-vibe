@@ -1,6 +1,6 @@
 {
   "name": "pi-mistral-vibe",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Unofficial Mistral Vibe provider for Pi with PKCE browser login and model discovery",
   "type": "module",
   "license": "MIT",

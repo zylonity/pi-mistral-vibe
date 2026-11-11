@@ -89,6 +89,16 @@ Startup performs only a bounded catalog GET, never an inference probe. Catalog s
 not written to disk. On same-key refresh failure, the previous in-memory list
 remains; a different key cannot use the previous key's discovered models.
 
+### Output budget
+
+Mistral Vibe models default to `max_tokens` 8192. DeepSeek V4.1 Flash
+(`deepseek-v4-1-flash-1017`) counts its reasoning against the output budget, so
+8192 tokens made high-effort turns stop with `finish_reason: "length"` mid-thought.
+It is given 65536 (live-verified accepted by the API). The floor is enforced on the
+request itself: subagent children create their session before their catalog refresh
+completes, so Pi may hand the provider a model cloned from the fallback definition
+(8192) under the DeepSeek id.
+
 ### Reasoning
 
 For the reference integration's known GLM relay IDs (`zai-glm-5`,
